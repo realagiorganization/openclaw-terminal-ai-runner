@@ -1,15 +1,13 @@
 /**
- * Claude Code CLI Bridge Server
+ * Terminal Agent CLI Bridge Server
  *
  * Embeds a tiny HTTP server that speaks OpenAI chat completions protocol.
- * When OpenClaw sends a request, it spawns `claude` CLI and translates
- * the NDJSON streaming output into SSE chunks.
+ * When OpenClaw sends a request, it spawns the configured terminal agent
+ * binary and translates NDJSON streaming output into SSE chunks.
  *
- * Features:
- *   - Line-buffered NDJSON parser (handles split chunks)
- *   - Retry with exponential backoff on transient errors
- *   - --max-turns safety cap to prevent runaway loops
- *   - Session resume via x-session-id header
+ * The first backend remains Claude-compatible, so this bridge still assumes
+ * stream-json output and Claude-style flags while the fork grows toward
+ * broader terminal-agent support.
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -17,7 +15,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 
 export interface BridgeConfig {
   port: number;
-  claudeBin: string;
+  agentBin: string;
   skipPermissions: boolean;
   workDir: string;
   maxTurns?: number;
@@ -36,8 +34,6 @@ const KILL_ESCALATION_MS = 2000;
 
 const liveProcesses = new Map<string, LiveProcess>();
 
-// ── Env cleanup ──────────────────────────────────────────────────────
-
 function buildCleanEnv(): NodeJS.ProcessEnv {
   const env = { ...process.env };
   for (const key of Object.keys(env)) {
@@ -47,8 +43,6 @@ function buildCleanEnv(): NodeJS.ProcessEnv {
   }
   return env;
 }
-
-// ── Transient error detection ────────────────────────────────────────
 
 const TRANSIENT_PATTERNS = [
   /ECONNRESET/i,
@@ -66,9 +60,6 @@ function isTransientError(stderr: string, code: number | null): boolean {
   return TRANSIENT_PATTERNS.some((p) => p.test(stderr));
 }
 
-// ── Message extraction ───────────────────────────────────────────────
-
-// content can be a string or an array of {type:"text",text:"..."} parts
 function flattenContent(content: unknown): string {
   if (typeof content === "string") return content;
   if (Array.isArray(content)) {
@@ -109,9 +100,6 @@ function trimPromptHistory(text: string, maxChars = PROMPT_HISTORY_MAX_CHARS): s
 }
 
 function extractPromptFromMessages(messages: Array<{ role: string; content: unknown }>): string {
-  // OpenClaw already manages session continuity by sending conversation history.
-  // The bridge must preserve that history instead of discarding everything except
-  // the latest user message. Otherwise every subprocess run feels fresh.
   const conversational = messages
     .filter((m) => m.role !== "system")
     .slice(-PROMPT_HISTORY_MAX_MESSAGES)
@@ -133,9 +121,6 @@ function extractSystemPrompt(messages: Array<{ role: string; content: unknown }>
   return full || undefined;
 }
 
-// ── Line-buffered NDJSON parser ──────────────────────────────────────
-// Handles chunks that split mid-line across `data` events from stdout.
-
 class NdjsonParser {
   private buffer = "";
   private handler: (event: { type: string; [key: string]: any }) => void;
@@ -147,7 +132,6 @@ class NdjsonParser {
   feed(chunk: string): void {
     this.buffer += chunk;
     const lines = this.buffer.split("\n");
-    // Keep the last (possibly incomplete) line in the buffer
     this.buffer = lines.pop() ?? "";
     for (const line of lines) {
       const trimmed = line.trim();
@@ -156,7 +140,7 @@ class NdjsonParser {
         const event = JSON.parse(trimmed);
         if (event.type) this.handler(event);
       } catch {
-        // Not valid JSON — skip
+        // Ignore malformed lines
       }
     }
   }
@@ -173,8 +157,6 @@ class NdjsonParser {
     this.buffer = "";
   }
 }
-
-// ── Process lifecycle ────────────────────────────────────────────────
 
 function killProcess(id: string): void {
   const live = liveProcesses.get(id);
@@ -198,14 +180,16 @@ function killProcess(id: string): void {
   }, KILL_ESCALATION_MS);
 }
 
-// ── Core: spawn claude CLI ───────────────────────────────────────────
-
 interface SpawnOpts {
   prompt: string;
   model: string;
   systemPrompt?: string;
   sessionId?: string;
   config: BridgeConfig;
+}
+
+function normalizeModel(model: string): string {
+  return model.replace(/^(?:terminal-agent-runner|claude-runner)\//, "");
 }
 
 function buildArgs(opts: SpawnOpts): string[] {
@@ -215,8 +199,7 @@ function buildArgs(opts: SpawnOpts): string[] {
     args.push("--dangerously-skip-permissions");
   }
 
-  const cleanModel = opts.model.replace(/^claude-runner\//, "");
-  args.push("--model", cleanModel);
+  args.push("--model", normalizeModel(opts.model));
 
   const maxTurns = opts.config.maxTurns ?? DEFAULT_MAX_TURNS;
   args.push("--max-turns", String(maxTurns));
@@ -231,8 +214,6 @@ function buildArgs(opts: SpawnOpts): string[] {
 
   return args;
 }
-
-// ── Request handler ──────────────────────────────────────────────────
 
 async function handleCompletions(
   req: IncomingMessage,
@@ -261,8 +242,6 @@ async function handleCompletions(
   }
 
   const spawnOpts: SpawnOpts = { prompt, model, systemPrompt, sessionId, config };
-
-  // Retry loop for transient errors
   const maxRetries = config.maxRetries ?? MAX_RETRIES;
   let lastError = "";
 
@@ -278,27 +257,23 @@ async function handleCompletions(
       } else {
         await handleNonStreamingResponse(spawnOpts, res, requestId);
       }
-      return; // Success — exit retry loop
+      return;
     } catch (err: any) {
       lastError = err.stderr ?? err.message ?? String(err);
 
-      // If response headers already sent (streaming started), can't retry
       if (res.headersSent) return;
 
       if (!isTransientError(lastError, err.exitCode ?? null)) {
-        break; // Non-transient — don't retry
+        break;
       }
     }
   }
 
-  // All retries exhausted
   if (!res.headersSent) {
     res.writeHead(502, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: { message: lastError || "claude CLI failed after retries", type: "server_error" } }));
+    res.end(JSON.stringify({ error: { message: lastError || "terminal agent CLI failed after retries", type: "server_error" } }));
   }
 }
-
-// ── Streaming response ───────────────────────────────────────────────
 
 async function handleStreamingResponse(
   opts: SpawnOpts,
@@ -307,9 +282,9 @@ async function handleStreamingResponse(
 ): Promise<void> {
   const args = buildArgs(opts);
   const cleanEnv = buildCleanEnv();
-  const model = opts.model.replace(/^claude-runner\//, "");
+  const model = normalizeModel(opts.model);
 
-  const proc = spawn(opts.config.claudeBin, args, {
+  const proc = spawn(opts.config.agentBin, args, {
     cwd: opts.config.workDir,
     env: cleanEnv,
     stdio: ["ignore", "pipe", "pipe"],
@@ -328,7 +303,6 @@ async function handleStreamingResponse(
     res.write(`data: ${JSON.stringify(data)}\n\n`);
   };
 
-  // Initial role chunk
   sendSSE({
     id: requestId,
     object: "chat.completion.chunk",
@@ -363,11 +337,10 @@ async function handleStreamingResponse(
   });
 
   return new Promise<void>((resolve, reject) => {
-    proc.on("close", (code) => {
+    proc.on("close", () => {
       parser.flush();
       liveProcesses.delete(requestId);
 
-      // If we got a result but no streaming deltas, send it as a single chunk
       if (resultText && !res.writableEnded) {
         sendSSE({
           id: requestId,
@@ -393,7 +366,6 @@ async function handleStreamingResponse(
     proc.on("error", (err) => {
       liveProcesses.delete(requestId);
       if (!res.headersSent) {
-        // Propagate for retry
         const wrapped: any = new Error(err.message);
         wrapped.stderr = stderr;
         reject(wrapped);
@@ -413,8 +385,6 @@ async function handleStreamingResponse(
   });
 }
 
-// ── Non-streaming response ───────────────────────────────────────────
-
 async function handleNonStreamingResponse(
   opts: SpawnOpts,
   res: ServerResponse,
@@ -422,9 +392,9 @@ async function handleNonStreamingResponse(
 ): Promise<void> {
   const args = buildArgs(opts);
   const cleanEnv = buildCleanEnv();
-  const model = opts.model.replace(/^claude-runner\//, "");
+  const model = normalizeModel(opts.model);
 
-  const proc = spawn(opts.config.claudeBin, args, {
+  const proc = spawn(opts.config.agentBin, args, {
     cwd: opts.config.workDir,
     env: cleanEnv,
     stdio: ["ignore", "pipe", "pipe"],
@@ -456,7 +426,7 @@ async function handleNonStreamingResponse(
       liveProcesses.delete(requestId);
 
       if (!resultText && code !== 0) {
-        const wrapped: any = new Error(stderr || `claude exited with code ${code}`);
+        const wrapped: any = new Error(stderr || `terminal agent exited with code ${code}`);
         wrapped.exitCode = code;
         wrapped.stderr = stderr;
         reject(wrapped);
@@ -491,8 +461,6 @@ async function handleNonStreamingResponse(
     });
   });
 }
-
-// ── Server lifecycle ─────────────────────────────────────────────────
 
 export function startBridgeServer(config: BridgeConfig): Promise<ReturnType<typeof createServer>> {
   return new Promise((resolve, reject) => {

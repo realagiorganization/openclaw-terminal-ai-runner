@@ -1,15 +1,19 @@
 {
-  "id": "claude-runner",
-  "name": "Claude Code Runner",
-  "description": "Spawns Claude Code CLI as a local provider — delegates all reasoning, tool use, and file editing to the CLI binary.",
-  "providers": ["claude-runner"],
+  "id": "terminal-agent-runner",
+  "name": "Terminal Agent Runner",
+  "description": "Spawns terminal agent CLIs as a local provider. This fork targets claude code, opencode, codex cli, amux and currently defaults to Claude-compatible streaming.",
+  "providers": ["terminal-agent-runner"],
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
     "properties": {
+      "agentBin": {
+        "type": "string",
+        "description": "Path to the terminal agent binary"
+      },
       "claudeBin": {
         "type": "string",
-        "description": "Path to the claude binary"
+        "description": "Legacy alias for agentBin"
       },
       "port": {
         "type": "number",
@@ -21,11 +25,15 @@
       },
       "defaultModel": {
         "type": "string",
-        "description": "Default Claude model to use"
+        "description": "Default model to use"
       },
       "maxTurns": {
         "type": "number",
         "description": "Max agentic turns per request (safety cap, default: 30)"
+      },
+      "workDir": {
+        "type": "string",
+        "description": "Working directory for the terminal agent CLI"
       }
     }
   }

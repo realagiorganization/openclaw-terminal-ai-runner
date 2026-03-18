@@ -1,7 +1,7 @@
 {
-  "name": "@openclaw/claude-runner",
+  "name": "@openclaw/terminal-agent-runner",
   "version": "0.1.0",
-  "description": "OpenClaw extension that spawns Claude Code CLI as a local LLM provider",
+  "description": "OpenClaw terminal agent runner for claude code, opencode, codex cli, amux",
   "type": "module",
   "openclaw": {
     "extensions": ["./index.ts"]

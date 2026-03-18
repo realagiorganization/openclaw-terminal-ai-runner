@@ -1,5 +1,5 @@
 {
-  "claudeBin": "claude",
+  "agentBin": "claude",
   "port": 7779,
   "skipPermissions": true,
   "maxTurns": 30,
