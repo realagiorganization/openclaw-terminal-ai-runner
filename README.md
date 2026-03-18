@@ -7,7 +7,7 @@ Instead of paying per-token via the Anthropic API, this spawns the `claude` CLI 
 ## How it works
 
 ```
-Discord/HTTP → OpenClaw Gateway → claude-runner provider
+Request → OpenClaw Gateway → claude-runner provider
   → bridge server (OpenAI-compat on localhost:7779)
     → spawn `claude -p "..." --output-format stream-json`
       → NDJSON → SSE translation → back to OpenClaw

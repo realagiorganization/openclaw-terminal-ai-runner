@@ -7,9 +7,25 @@
     "type": "object",
     "additionalProperties": false,
     "properties": {
-      "enabled": {
+      "claudeBin": {
+        "type": "string",
+        "description": "Path to the claude binary"
+      },
+      "port": {
+        "type": "number",
+        "description": "Port for the local bridge server"
+      },
+      "skipPermissions": {
         "type": "boolean",
-        "description": "Enable or disable the extension"
+        "description": "Use --dangerously-skip-permissions flag"
+      },
+      "defaultModel": {
+        "type": "string",
+        "description": "Default Claude model to use"
+      },
+      "maxTurns": {
+        "type": "number",
+        "description": "Max agentic turns per request (safety cap, default: 30)"
       }
     }
   }

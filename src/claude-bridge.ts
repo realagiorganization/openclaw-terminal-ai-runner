@@ -86,24 +86,19 @@ function flattenContent(content: unknown): string {
 }
 
 function extractPromptFromMessages(messages: Array<{ role: string; content: unknown }>): string {
-  const parts: string[] = [];
-  for (const msg of messages) {
-    if (msg.role === "system") continue;
-    const text = flattenContent(msg.content);
-    if (!text) continue;
-    if (msg.role === "user") {
-      parts.push(text);
-    } else if (msg.role === "assistant") {
-      parts.push(`[Previous assistant response]: ${text}`);
-    }
-  }
-  return parts.join("\n\n");
+  // Take only the latest user message as the prompt.
+  // Conversation history is managed by claude CLI sessions (--resume).
+  // Passing all prior turns as -p would duplicate context and bloat the prompt.
+  const userMsgs = messages.filter((m) => m.role === "user");
+  if (userMsgs.length === 0) return "";
+  return flattenContent(userMsgs[userMsgs.length - 1].content);
 }
 
 function extractSystemPrompt(messages: Array<{ role: string; content: unknown }>): string | undefined {
   const systemMsgs = messages.filter((m) => m.role === "system");
   if (systemMsgs.length === 0) return undefined;
-  return systemMsgs.map((m) => flattenContent(m.content)).filter(Boolean).join("\n\n");
+  const full = systemMsgs.map((m) => flattenContent(m.content)).filter(Boolean).join("\n\n");
+  return full || undefined;
 }
 
 // ── Line-buffered NDJSON parser ──────────────────────────────────────

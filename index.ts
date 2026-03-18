@@ -15,6 +15,7 @@
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { homedir } from "node:os";
 import type {
   OpenClawPluginApi,
   ProviderAuthContext,
@@ -97,7 +98,8 @@ const claudeRunnerPlugin = {
     api.registerService({
       id: "claude-runner-bridge",
       start: async (ctx) => {
-        const workDir = ctx.workspaceDir ?? DEFAULT_WORK_DIR;
+        const rawWorkDir = ctx.workspaceDir ?? DEFAULT_WORK_DIR;
+        const workDir = rawWorkDir.startsWith("~") ? rawWorkDir.replace("~", homedir()) : rawWorkDir;
         bridgeServer = await startBridgeServer({ port, claudeBin, skipPermissions, workDir, maxTurns });
         ctx.logger.info(`Claude Runner bridge listening on 127.0.0.1:${port}`);
       },
