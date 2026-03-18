@@ -23,12 +23,12 @@ import type {
   ProviderAuthResult,
   ProviderDiscoveryContext,
 } from "openclaw/plugin-sdk/core";
+import { getAgentBackend } from "./src/agent-backends.js";
 import { startBridgeServer, stopBridgeServer } from "./src/terminal-agent-bridge.js";
 
 const PROVIDER_ID = "terminal-agent-runner";
 const LEGACY_PROVIDER_ID = "claude-runner";
 const DEFAULT_PORT = 7779;
-const DEFAULT_AGENT_BIN = "claude";
 const DEFAULT_WORK_DIR = "~/.openclaw/workspace";
 const TARGET_AGENT_FAMILY = "claude code, opencode, codex cli, amux";
 
@@ -42,45 +42,6 @@ function loadExtensionConfig(): Record<string, unknown> {
   }
 }
 
-const MODELS = [
-  {
-    id: "claude-opus-4-5",
-    name: "Claude Opus 4.5 (CLI)",
-    reasoning: true,
-    input: ["text", "image"] as Array<"text" | "image">,
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: 200_000,
-    maxTokens: 16_384,
-  },
-  {
-    id: "claude-sonnet-4-6",
-    name: "Claude Sonnet 4.6 (CLI)",
-    reasoning: true,
-    input: ["text", "image"] as Array<"text" | "image">,
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: 200_000,
-    maxTokens: 16_384,
-  },
-  {
-    id: "claude-sonnet-4",
-    name: "Claude Sonnet 4 (CLI)",
-    reasoning: false,
-    input: ["text", "image"] as Array<"text" | "image">,
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: 200_000,
-    maxTokens: 8_192,
-  },
-  {
-    id: "claude-haiku-4-5",
-    name: "Claude Haiku 4.5 (CLI)",
-    reasoning: false,
-    input: ["text"] as Array<"text" | "image">,
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: 200_000,
-    maxTokens: 8_192,
-  },
-];
-
 let bridgeServer: Awaited<ReturnType<typeof startBridgeServer>> | null = null;
 
 const terminalAgentRunnerPlugin = {
@@ -90,18 +51,24 @@ const terminalAgentRunnerPlugin = {
 
   register(api: OpenClawPluginApi) {
     const extConfig = loadExtensionConfig();
-    const agentBin = (extConfig.agentBin as string) ?? (extConfig.claudeBin as string) ?? DEFAULT_AGENT_BIN;
+    const backend = getAgentBackend(extConfig.agentKind as string | undefined);
+    const providerModels = backend.models.map((model) => ({ ...model, api: "openai-completions" as const }));
+    const agentBin = (extConfig.agentBin as string) ?? (extConfig.claudeBin as string) ?? backend.defaultBinary;
     const port = (extConfig.port as number) ?? DEFAULT_PORT;
     const skipPermissions = (extConfig.skipPermissions as boolean) ?? true;
-    const defaultModel = (extConfig.defaultModel as string) ?? "claude-opus-4-5";
+    const defaultModel = (extConfig.defaultModel as string) ?? backend.defaultModel;
     const maxTurns = (extConfig.maxTurns as number) ?? 30;
+    const backendRuntimeNote =
+      backend.implementationStatus === "implemented"
+        ? `${backend.label} backend is active. ${backend.summary}`
+        : `${backend.label} backend is scaffold-only in this fork. Requests will fail until its adapter is implemented.`;
 
     api.registerService({
       id: "terminal-agent-runner-bridge",
       start: async (ctx) => {
         const rawWorkDir = (extConfig.workDir as string) ?? ctx.workspaceDir ?? DEFAULT_WORK_DIR;
         const workDir = rawWorkDir.startsWith("~") ? rawWorkDir.replace("~", homedir()) : rawWorkDir;
-        bridgeServer = await startBridgeServer({ port, agentBin, skipPermissions, workDir, maxTurns });
+        bridgeServer = await startBridgeServer({ agentKind: backend.kind, port, agentBin, skipPermissions, workDir, maxTurns });
         ctx.logger.info(`Terminal Agent Runner bridge listening on 127.0.0.1:${port}`);
       },
       stop: async (ctx) => {
@@ -120,16 +87,10 @@ const terminalAgentRunnerPlugin = {
       auth: [
         {
           id: "local",
-          label: "Local Terminal Agent CLI",
-          hint: `Targets ${TARGET_AGENT_FAMILY}. Current defaults expect Claude-compatible flags and stream-json output.`,
+          label: `Local ${backend.label}`,
+          hint: `${backend.summary} Fork target: ${TARGET_AGENT_FAMILY}`,
           kind: "custom",
           run: async (ctx: ProviderAuthContext): Promise<ProviderAuthResult> => {
-            const agentBinary = await ctx.prompter.text({
-              message: "Path to terminal agent binary",
-              initialValue: agentBin,
-              validate: (v: string) => (v.trim() ? undefined : "Path is required"),
-            });
-
             const bridgePort = await ctx.prompter.text({
               message: "Bridge server port",
               initialValue: String(port),
@@ -139,7 +100,6 @@ const terminalAgentRunnerPlugin = {
               },
             });
 
-            void agentBinary;
             const baseUrl = `http://127.0.0.1:${bridgePort}/v1`;
 
             return {
@@ -161,13 +121,13 @@ const terminalAgentRunnerPlugin = {
                       apiKey: "terminal-agent-runner-local",
                       api: "openai-completions",
                       authHeader: false,
-                      models: MODELS.map((m) => ({ ...m, api: "openai-completions" as const })),
+                      models: providerModels,
                     },
                   },
                 },
                 agents: {
                   defaults: {
-                    models: Object.fromEntries(MODELS.map((m) => [`${PROVIDER_ID}/${m.id}`, {}])),
+                    models: Object.fromEntries(backend.models.map((model) => [`${PROVIDER_ID}/${model.id}`, {}])),
                   },
                 },
                 plugins: {
@@ -181,9 +141,11 @@ const terminalAgentRunnerPlugin = {
               defaultModel: `${PROVIDER_ID}/${defaultModel}`,
               notes: [
                 `This fork is targeting ${TARGET_AGENT_FAMILY}.`,
-                "Current runtime defaults still expect a Claude-compatible CLI (npm i -g @anthropic-ai/claude-code).",
-                "Requires an active Anthropic Max subscription for --dangerously-skip-permissions.",
-                "All reasoning, tool use, and file editing is handled by the CLI - zero cost per token on Max plan.",
+                `Set "agentKind": "${backend.kind}" and "agentBin": "${agentBin}" in the extension config.json when changing backends.`,
+                backendRuntimeNote,
+                ...(backend.kind === "claude"
+                  ? ["Claude backend requires an active Anthropic Max subscription for --dangerously-skip-permissions."]
+                  : []),
               ],
             };
           },
@@ -193,7 +155,7 @@ const terminalAgentRunnerPlugin = {
         order: "late",
         run: async (ctx: ProviderDiscoveryContext) => {
           const explicit = ctx.config.models?.providers?.[PROVIDER_ID] ?? ctx.config.models?.providers?.[LEGACY_PROVIDER_ID];
-          if (explicit && Array.isArray(explicit.models) && explicit.models.length > 0) {
+          if (explicit) {
             return {
               provider: {
                 ...explicit,
@@ -201,6 +163,7 @@ const terminalAgentRunnerPlugin = {
                 api: explicit.api ?? ("openai-completions" as const),
                 apiKey: explicit.apiKey ?? "terminal-agent-runner-local",
                 authHeader: false,
+                models: Array.isArray(explicit.models) && explicit.models.length > 0 ? explicit.models : providerModels,
               },
             };
           }
@@ -213,7 +176,7 @@ const terminalAgentRunnerPlugin = {
                 api: "openai-completions" as const,
                 apiKey: "terminal-agent-runner-local",
                 authHeader: false,
-                models: MODELS.map((m) => ({ ...m, api: "openai-completions" as const })),
+                models: providerModels,
               },
             };
           }
@@ -225,15 +188,15 @@ const terminalAgentRunnerPlugin = {
         onboarding: {
           choiceId: PROVIDER_ID,
           choiceLabel: "Terminal Agent CLI",
-          choiceHint: `Agnostic terminal-agent fork for ${TARGET_AGENT_FAMILY}`,
+          choiceHint: `${backend.label} selected. Fork target: ${TARGET_AGENT_FAMILY}`,
           groupId: PROVIDER_ID,
           groupLabel: "Terminal Agent CLI",
-          groupHint: "Current backend defaults remain Claude-compatible while this fork expands to more terminal agents",
+          groupHint: backendRuntimeNote,
           methodId: "local",
         },
         modelPicker: {
           label: "Terminal Agent CLI",
-          hint: `Use the terminal agent runner for ${TARGET_AGENT_FAMILY}`,
+          hint: `Current backend: ${backend.label}`,
           methodId: "local",
         },
       },

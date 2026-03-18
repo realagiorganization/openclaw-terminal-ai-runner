@@ -7,6 +7,7 @@ echo "Installing openclaw-terminal-ai-runner to $EXT_DIR ..."
 mkdir -p "$EXT_DIR/src"
 
 cp index.ts "$EXT_DIR/"
+cp src/agent-backends.ts "$EXT_DIR/src/"
 cp src/terminal-agent-bridge.ts "$EXT_DIR/src/"
 cp openclaw.plugin.json "$EXT_DIR/"
 cp package.json "$EXT_DIR/"
@@ -60,7 +61,9 @@ echo ""
 echo "  2. Restart OpenClaw gateway:"
 echo "     openclaw gateway restart"
 echo ""
+echo "  3. Set agentKind in $EXT_DIR/config.json if you are not using the default Claude backend"
+echo ""
 if [ -z "$AGENT_BIN" ]; then
-  echo "  3. Set agentBin in $EXT_DIR/config.json"
+  echo "  4. Set agentBin in $EXT_DIR/config.json"
   echo ""
 fi

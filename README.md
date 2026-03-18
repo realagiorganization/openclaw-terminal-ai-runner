@@ -49,7 +49,14 @@ openclaw gateway restart
 
 ## Current backend status
 
-This rename is ahead of the full multi-agent implementation. The first supported backend remains Claude-compatible, and the current bridge still assumes Claude-style flags such as `--output-format stream-json`, `--max-turns`, `--append-system-prompt`, and `--resume`.
+This fork now has a backend adapter layer selected by `agentKind`. Only the Claude backend is implemented end-to-end today. The others are scaffolds that make the abstraction explicit but intentionally fail if you try to run them before their adapter logic is written.
+
+| `agentKind` | Status | Notes |
+|---|---|---|
+| `claude` | Implemented | Uses Claude-style flags such as `--output-format stream-json`, `--max-turns`, `--append-system-prompt`, and `--resume` |
+| `opencode` | Scaffold | Config wiring and placeholder model exist, runtime adapter not implemented |
+| `codex` | Scaffold | Config wiring and placeholder model exist, runtime adapter not implemented |
+| `amux` | Scaffold | Config wiring and placeholder model exist, runtime adapter not implemented |
 
 ## Configuration
 
@@ -57,12 +64,13 @@ Extension settings are in `~/.openclaw/extensions/terminal-agent-runner/config.j
 
 | Option | Default | Description |
 |---|---|---|
+| `agentKind` | `"claude"` | Selects the backend adapter: `claude`, `opencode`, `codex`, or `amux` |
 | `agentBin` | `"claude"` | Path to the terminal agent binary. Current defaults assume a Claude-compatible CLI |
 | `claudeBin` | unset | Legacy compatibility alias for older config files |
 | `port` | `7779` | Port for the local bridge server |
 | `skipPermissions` | `true` | Use `--dangerously-skip-permissions` flag (requires Max plan) |
-| `maxTurns` | `30` | Max agentic turns per request (safety cap to prevent runaway loops) |
-| `defaultModel` | `"claude-opus-4-5"` | Default model when none specified |
+| `maxTurns` | `30` | Max agentic turns per request (safety cap to prevent runaway loops on backends that support it) |
+| `defaultModel` | `"claude-opus-4-5"` | Default model for the selected backend |
 | `workDir` | `"~/.openclaw/workspace"` | Working directory for the terminal agent CLI |
 
 To set as default model (optional):
@@ -73,6 +81,8 @@ openclaw config set agents.defaults.model.fallbacks '["anthropic/claude-opus-4-5
 ```
 
 ## Available models
+
+When `agentKind` is `claude`:
 
 | Model ID | Description |
 |---|---|
@@ -89,6 +99,8 @@ openclaw config set agents.defaults.model.fallbacks '["anthropic/claude-opus-4-5
 | **Capabilities** | Chat completions only | Terminal agent workflow for `claude code, opencode, codex cli, amux` |
 | **Reasoning** | Single-turn | Multi-step agentic loops |
 | **Tool handling** | Build your own | Delegated to CLI |
+
+For scaffold backends, model IDs are placeholders until their adapters are implemented.
 
 ## Updating
 
@@ -117,6 +129,10 @@ The configured terminal agent CLI is not authenticated. For Claude-compatible de
 Check if the bridge is running: `curl http://127.0.0.1:7779/health`
 
 If not, check gateway logs: `journalctl --user -u openclaw-gateway -n 50`
+
+**Backend says it is scaffold-only**
+
+Only `agentKind: "claude"` is implemented today. Set `agentKind` back to `"claude"` or implement the selected backend adapter.
 
 **Terminal agent binary not found**
 

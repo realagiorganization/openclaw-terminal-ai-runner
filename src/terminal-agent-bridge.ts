@@ -12,8 +12,10 @@
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { spawn, type ChildProcess } from "node:child_process";
+import { getAgentBackend, stripProviderPrefix, type AgentKind } from "./agent-backends.js";
 
 export interface BridgeConfig {
+  agentKind: AgentKind;
   port: number;
   agentBin: string;
   skipPermissions: boolean;
@@ -33,16 +35,6 @@ const RETRY_DELAYS = [1000, 2000];
 const KILL_ESCALATION_MS = 2000;
 
 const liveProcesses = new Map<string, LiveProcess>();
-
-function buildCleanEnv(): NodeJS.ProcessEnv {
-  const env = { ...process.env };
-  for (const key of Object.keys(env)) {
-    if (key.startsWith("CLAUDECODE") || key.startsWith("CLAUDE_CODE_")) {
-      delete env[key];
-    }
-  }
-  return env;
-}
 
 const TRANSIENT_PATTERNS = [
   /ECONNRESET/i,
@@ -188,33 +180,6 @@ interface SpawnOpts {
   config: BridgeConfig;
 }
 
-function normalizeModel(model: string): string {
-  return model.replace(/^(?:terminal-agent-runner|claude-runner)\//, "");
-}
-
-function buildArgs(opts: SpawnOpts): string[] {
-  const args: string[] = ["-p", opts.prompt, "--output-format", "stream-json", "--verbose"];
-
-  if (opts.config.skipPermissions) {
-    args.push("--dangerously-skip-permissions");
-  }
-
-  args.push("--model", normalizeModel(opts.model));
-
-  const maxTurns = opts.config.maxTurns ?? DEFAULT_MAX_TURNS;
-  args.push("--max-turns", String(maxTurns));
-
-  if (opts.systemPrompt) {
-    args.push("--append-system-prompt", opts.systemPrompt);
-  }
-
-  if (opts.sessionId) {
-    args.push("--resume", opts.sessionId);
-  }
-
-  return args;
-}
-
 async function handleCompletions(
   req: IncomingMessage,
   res: ServerResponse,
@@ -225,10 +190,11 @@ async function handleCompletions(
     chunks.push(chunk as Buffer);
   }
   const body = JSON.parse(Buffer.concat(chunks).toString());
+  const backend = getAgentBackend(config.agentKind);
 
   const messages: Array<{ role: string; content: string }> = body.messages ?? [];
   const stream = body.stream !== false;
-  const model = body.model ?? "claude-opus-4-5";
+  const model = body.model ?? backend.defaultModel;
   const sessionId = (req.headers["x-session-id"] as string) || undefined;
   const requestId = `req-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
@@ -280,9 +246,17 @@ async function handleStreamingResponse(
   res: ServerResponse,
   requestId: string,
 ): Promise<void> {
-  const args = buildArgs(opts);
-  const cleanEnv = buildCleanEnv();
-  const model = normalizeModel(opts.model);
+  const backend = getAgentBackend(opts.config.agentKind);
+  const args = backend.buildArgs({
+    prompt: opts.prompt,
+    model: opts.model,
+    systemPrompt: opts.systemPrompt,
+    sessionId: opts.sessionId,
+    skipPermissions: opts.config.skipPermissions,
+    maxTurns: opts.config.maxTurns ?? DEFAULT_MAX_TURNS,
+  });
+  const cleanEnv = backend.sanitizeEnv(process.env);
+  const model = stripProviderPrefix(opts.model);
 
   const proc = spawn(opts.config.agentBin, args, {
     cwd: opts.config.workDir,
@@ -315,16 +289,18 @@ async function handleStreamingResponse(
   let stderr = "";
 
   const parser = new NdjsonParser((event) => {
-    if (event.type === "content_block_delta" && event.delta?.type === "text_delta" && event.delta.text) {
+    const parsed = backend.parseNdjsonEvent(event);
+    if (parsed.contentDelta) {
       sendSSE({
         id: requestId,
         object: "chat.completion.chunk",
         created: Math.floor(Date.now() / 1000),
         model,
-        choices: [{ index: 0, delta: { content: event.delta.text }, finish_reason: null }],
+        choices: [{ index: 0, delta: { content: parsed.contentDelta }, finish_reason: null }],
       });
-    } else if (event.type === "result") {
-      resultText = event.result ?? event.text ?? "";
+    }
+    if (typeof parsed.resultText === "string") {
+      resultText = parsed.resultText;
     }
   });
 
@@ -390,9 +366,17 @@ async function handleNonStreamingResponse(
   res: ServerResponse,
   requestId: string,
 ): Promise<void> {
-  const args = buildArgs(opts);
-  const cleanEnv = buildCleanEnv();
-  const model = normalizeModel(opts.model);
+  const backend = getAgentBackend(opts.config.agentKind);
+  const args = backend.buildArgs({
+    prompt: opts.prompt,
+    model: opts.model,
+    systemPrompt: opts.systemPrompt,
+    sessionId: opts.sessionId,
+    skipPermissions: opts.config.skipPermissions,
+    maxTurns: opts.config.maxTurns ?? DEFAULT_MAX_TURNS,
+  });
+  const cleanEnv = backend.sanitizeEnv(process.env);
+  const model = stripProviderPrefix(opts.model);
 
   const proc = spawn(opts.config.agentBin, args, {
     cwd: opts.config.workDir,
@@ -407,8 +391,9 @@ async function handleNonStreamingResponse(
   let stderr = "";
 
   const parser = new NdjsonParser((event) => {
-    if (event.type === "result") {
-      resultText = event.result ?? event.text ?? "";
+    const parsed = backend.parseNdjsonEvent(event);
+    if (typeof parsed.resultText === "string") {
+      resultText = parsed.resultText;
     }
   });
 
@@ -482,16 +467,16 @@ export function startBridgeServer(config: BridgeConfig): Promise<ReturnType<type
       }
 
       if (req.url === "/v1/models" && req.method === "GET") {
+        const backend = getAgentBackend(config.agentKind);
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(
           JSON.stringify({
             object: "list",
-            data: [
-              { id: "claude-opus-4-5", object: "model", owned_by: "anthropic" },
-              { id: "claude-sonnet-4-6", object: "model", owned_by: "anthropic" },
-              { id: "claude-sonnet-4", object: "model", owned_by: "anthropic" },
-              { id: "claude-haiku-4-5", object: "model", owned_by: "anthropic" },
-            ],
+            data: backend.models.map((model) => ({
+              id: model.id,
+              object: "model",
+              owned_by: backend.kind === "claude" ? "anthropic" : "terminal-agent-runner",
+            })),
           }),
         );
         return;

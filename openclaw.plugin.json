@@ -7,6 +7,11 @@
     "type": "object",
     "additionalProperties": false,
     "properties": {
+      "agentKind": {
+        "type": "string",
+        "enum": ["claude", "opencode", "codex", "amux"],
+        "description": "Selects the terminal agent backend adapter"
+      },
       "agentBin": {
         "type": "string",
         "description": "Path to the terminal agent binary"
@@ -25,7 +30,7 @@
       },
       "defaultModel": {
         "type": "string",
-        "description": "Default model to use"
+        "description": "Default model to use for the selected backend"
       },
       "maxTurns": {
         "type": "number",

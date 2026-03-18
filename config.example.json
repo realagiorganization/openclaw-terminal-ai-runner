@@ -1,4 +1,5 @@
 {
+  "agentKind": "claude",
   "agentBin": "claude",
   "port": 7779,
   "skipPermissions": true,
