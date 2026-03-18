@@ -29,37 +29,25 @@ cd openclaw-claude-runner
 bash install.sh
 ```
 
-This copies the extension to `~/.openclaw/extensions/claude-runner/`.
+The install script:
+- Copies the extension to `~/.openclaw/extensions/claude-runner/`
+- Enables the plugin via `openclaw plugins enable`
+- Registers the provider via `openclaw config set`
+- Creates a default `config.json` if one doesn't exist
 
-## Setup
-
-### 1. Authenticate Claude Code CLI
+After install, two remaining steps:
 
 ```bash
+# 1. Authenticate Claude Code CLI (if not already done)
 claude login
+
+# 2. Restart the gateway to pick up the extension
+openclaw gateway restart
 ```
 
-This is interactive — it opens a browser for OAuth. On a remote server, use the URL it prints.
+## Configuration
 
-Verify:
-```bash
-claude -p "say hello" --output-format stream-json --verbose --dangerously-skip-permissions --max-turns 1
-```
-
-### 2. Configure the extension
-
-Edit `~/.openclaw/extensions/claude-runner/config.json`:
-
-```json
-{
-  "claudeBin": "claude",
-  "port": 7779,
-  "skipPermissions": true,
-  "maxTurns": 30,
-  "defaultModel": "claude-opus-4-5",
-  "workDir": "~/.openclaw/workspace"
-}
-```
+Extension settings are in `~/.openclaw/extensions/claude-runner/config.json`:
 
 | Option | Default | Description |
 |---|---|---|
@@ -70,53 +58,11 @@ Edit `~/.openclaw/extensions/claude-runner/config.json`:
 | `defaultModel` | `"claude-opus-4-5"` | Default model when none specified |
 | `workDir` | `"~/.openclaw/workspace"` | Working directory for claude CLI |
 
-### 3. Enable in OpenClaw config
-
-Add to `~/.openclaw/openclaw.json`:
-
-```jsonc
-{
-  // Enable the plugin
-  "plugins": {
-    "entries": {
-      "claude-runner": { "enabled": true }
-    }
-  },
-
-  // Register the provider
-  "models": {
-    "providers": {
-      "claude-runner": {
-        "baseUrl": "http://127.0.0.1:7779/v1",
-        "api": "openai-completions",
-        "apiKey": "claude-runner-local",
-        "authHeader": false,
-        "models": [
-          { "id": "claude-opus-4-5", "name": "Claude Opus 4.5 (CLI)", "contextWindow": 200000, "maxTokens": 16384 },
-          { "id": "claude-sonnet-4-6", "name": "Claude Sonnet 4.6 (CLI)", "contextWindow": 200000, "maxTokens": 16384 },
-          { "id": "claude-sonnet-4", "name": "Claude Sonnet 4 (CLI)", "contextWindow": 200000, "maxTokens": 8192 },
-          { "id": "claude-haiku-4-5", "name": "Claude Haiku 4.5 (CLI)", "contextWindow": 200000, "maxTokens": 8192 }
-        ]
-      }
-    }
-  },
-
-  // Set as default (optional)
-  "agents": {
-    "defaults": {
-      "model": {
-        "primary": "claude-runner/claude-opus-4-5",
-        "fallbacks": ["anthropic/claude-opus-4-5"]
-      }
-    }
-  }
-}
-```
-
-### 4. Restart gateway
+To set as default model (optional):
 
 ```bash
-openclaw gateway restart
+openclaw config set agents.defaults.model.primary "claude-runner/claude-opus-4-5"
+openclaw config set agents.defaults.model.fallbacks '["anthropic/claude-opus-4-5"]'
 ```
 
 ## Available models

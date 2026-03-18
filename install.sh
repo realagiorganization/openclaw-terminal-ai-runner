@@ -14,31 +14,53 @@ cp package.json "$EXT_DIR/"
 # Create config.json from example if it doesn't exist
 if [ ! -f "$EXT_DIR/config.json" ]; then
   cp config.example.json "$EXT_DIR/config.json"
-  echo ""
   echo "Created default config at $EXT_DIR/config.json"
-  echo "Edit it to set your claude binary path and other options."
 else
-  echo ""
   echo "Existing config.json preserved at $EXT_DIR/config.json"
 fi
 
+# Detect claude binary path
+CLAUDE_BIN=$(which claude 2>/dev/null || echo "")
+if [ -z "$CLAUDE_BIN" ]; then
+  echo ""
+  echo "WARNING: 'claude' not found in PATH."
+  echo "Install it: npm i -g @anthropic-ai/claude-code"
+  echo "Then set the full path in $EXT_DIR/config.json"
+else
+  echo "Found claude at: $CLAUDE_BIN"
+fi
+
+# Configure OpenClaw via CLI
 echo ""
-echo "Done! Now:"
+echo "Configuring OpenClaw..."
+
+# Enable the plugin
+openclaw plugins enable claude-runner 2>/dev/null && echo "Plugin enabled." || \
+  npx openclaw plugins enable claude-runner 2>/dev/null && echo "Plugin enabled." || \
+  echo "Could not auto-enable plugin. Run: openclaw plugins enable claude-runner"
+
+# Register the provider
+openclaw config set models.providers.claude-runner.baseUrl "http://127.0.0.1:7779/v1" 2>/dev/null || \
+  npx openclaw config set models.providers.claude-runner.baseUrl "http://127.0.0.1:7779/v1" 2>/dev/null || true
+openclaw config set models.providers.claude-runner.api "openai-completions" 2>/dev/null || \
+  npx openclaw config set models.providers.claude-runner.api "openai-completions" 2>/dev/null || true
+openclaw config set models.providers.claude-runner.apiKey "claude-runner-local" 2>/dev/null || \
+  npx openclaw config set models.providers.claude-runner.apiKey "claude-runner-local" 2>/dev/null || true
+openclaw config set models.providers.claude-runner.authHeader false 2>/dev/null || \
+  npx openclaw config set models.providers.claude-runner.authHeader false 2>/dev/null || true
+
+echo "Provider configured."
+
+echo ""
+echo "Done! Remaining steps:"
 echo ""
 echo "  1. Authenticate Claude Code CLI (if not already done):"
 echo "     claude login"
 echo ""
-echo "  2. Enable the plugin in ~/.openclaw/openclaw.json:"
-echo '     "plugins": { "entries": { "claude-runner": { "enabled": true } } }'
-echo ""
-echo "  3. Add the provider and set as default model in ~/.openclaw/openclaw.json:"
-echo '     "models": { "providers": { "claude-runner": {'
-echo '       "baseUrl": "http://127.0.0.1:7779/v1",'
-echo '       "api": "openai-completions",'
-echo '       "apiKey": "claude-runner-local",'
-echo '       "authHeader": false,'
-echo '       "models": [{"id":"claude-opus-4-5"},{"id":"claude-sonnet-4-6"},{"id":"claude-sonnet-4"},{"id":"claude-haiku-4-5"}]'
-echo '     }}}'
-echo ""
-echo "  4. Restart OpenClaw gateway:"
+echo "  2. Restart OpenClaw gateway:"
 echo "     openclaw gateway restart"
+echo ""
+if [ -z "$CLAUDE_BIN" ]; then
+  echo "  3. Set claude binary path in $EXT_DIR/config.json"
+  echo ""
+fi
